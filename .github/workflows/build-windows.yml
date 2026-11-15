@@ -1,0 +1,51 @@
+name: Build Windows amd64
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # 打 tag 时需要创建 Release
+
+env:
+  CARGO_TERM_COLOR: always
+  TARGET: x86_64-pc-windows-msvc
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+        # 若仓库根目录是上级目录（Cargo.toml 在 ndm-rs/ 子目录），改为 ndm-rs
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable, MSVC)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --release --locked --target ${{ env.TARGET }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ env.TARGET }}
+
+      - name: Package
+        run: |
+          mkdir dist
+          cp target/${{ env.TARGET }}/release/ndm-rs.exe dist/
+          cp README.md dist/
+          cd dist
+          7z a -tzip ../ndm-rs-windows-amd64.zip ./*
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ndm-rs-windows-amd64.zip
