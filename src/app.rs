@@ -1,14 +1,16 @@
 //! egui 桌面界面：任务列表、分类侧栏、新建任务、设置、托盘与完成提示。
+//! 视觉由 `theme` 模块统一提供（深色玻璃质感 + 蓝紫渐变 + 灵动动画）。
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use eframe::egui;
+use eframe::egui::{self, Color32, RichText};
 
-use crate::model::{AppState, DownloadRequest, TaskState, TaskView};
+use crate::model::{AppState, Category, DownloadRequest, TaskState, TaskView};
 use crate::platform::{self, Tray, TrayAction};
 use crate::settings::{ProxyMode, Settings};
+use crate::theme::{self, c};
 use crate::util;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,17 +40,30 @@ impl Filter {
             Filter::Other => "其它",
         }
     }
+    fn glyph(self) -> &'static str {
+        match self {
+            Filter::All => "▦",
+            Filter::Active => "◉",
+            Filter::Completed => "✓",
+            Filter::Video => "▶",
+            Filter::Audio => "♪",
+            Filter::Archive => "▣",
+            Filter::Document => "▤",
+            Filter::Program => "⚙",
+            Filter::Other => "⋯",
+        }
+    }
     fn matches(self, v: &TaskView) -> bool {
         match self {
             Filter::All => true,
             Filter::Active => v.state.is_active() || v.state == TaskState::Paused,
             Filter::Completed => v.state == TaskState::Done,
-            Filter::Video => v.category == crate::model::Category::Video,
-            Filter::Audio => v.category == crate::model::Category::Audio,
-            Filter::Archive => v.category == crate::model::Category::Archive,
-            Filter::Document => v.category == crate::model::Category::Document,
-            Filter::Program => v.category == crate::model::Category::Program,
-            Filter::Other => v.category == crate::model::Category::Other,
+            Filter::Video => v.category == Category::Video,
+            Filter::Audio => v.category == Category::Audio,
+            Filter::Archive => v.category == Category::Archive,
+            Filter::Document => v.category == Category::Document,
+            Filter::Program => v.category == Category::Program,
+            Filter::Other => v.category == Category::Other,
         }
     }
     const ALL: [Filter; 9] = [
@@ -62,6 +77,28 @@ impl Filter {
         Filter::Program,
         Filter::Other,
     ];
+}
+
+fn category_glyph(cat: Category) -> &'static str {
+    match cat {
+        Category::Video => "▶",
+        Category::Audio => "♪",
+        Category::Archive => "▣",
+        Category::Document => "▤",
+        Category::Program => "⚙",
+        Category::Other => "⋯",
+    }
+}
+
+fn category_color(cat: Category) -> Color32 {
+    match cat {
+        Category::Video => c::ACCENT,
+        Category::Audio => c::SUCCESS,
+        Category::Archive => c::WARN,
+        Category::Document => c::INFO,
+        Category::Program => c::ACCENT_2,
+        Category::Other => c::FAINT,
+    }
 }
 
 pub struct NdmApp {
@@ -123,40 +160,49 @@ impl NdmApp {
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
-        if ui.button("新建任务").clicked() {
+        // 品牌标识 + 渐变强调色标题
+        theme::icon_tile(ui, "N", c::ACCENT, 26.0);
+        ui.label(RichText::new("NDM").strong().size(16.0).color(Color32::WHITE));
+        ui.label(RichText::new("RS").size(11.0).color(c::ACCENT));
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(4.0);
+
+        if theme::primary_button(ui, "＋  新建任务") {
             self.show_new = true;
         }
-        if ui.button("全部开始").clicked() {
+        ui.add_space(2.0);
+        if ui.button("▶  全部开始").clicked() {
             self.state.resume_all();
         }
-        if ui.button("全部暂停").clicked() {
+        if ui.button("⏸  全部暂停").clicked() {
             self.state.pause_all();
         }
         ui.separator();
         let sel = self.selected_task();
         let enabled = sel.is_some();
-        if ui.add_enabled(enabled, egui::Button::new("开始")).clicked() {
+        if ui.add_enabled(enabled, egui::Button::new("▶ 开始")).clicked() {
             if let Some(id) = sel {
                 self.state.resume(id);
             }
         }
-        if ui.add_enabled(enabled, egui::Button::new("暂停")).clicked() {
+        if ui.add_enabled(enabled, egui::Button::new("⏸ 暂停")).clicked() {
             if let Some(id) = sel {
                 self.state.pause(id);
             }
         }
-        if ui.add_enabled(enabled, egui::Button::new("重试")).clicked() {
+        if ui.add_enabled(enabled, egui::Button::new("⟳ 重试")).clicked() {
             if let Some(id) = sel {
                 self.state.restart(id);
             }
         }
-        if ui.add_enabled(enabled, egui::Button::new("删除")).clicked() {
+        if ui.add_enabled(enabled, egui::Button::new("✕ 删除")).clicked() {
             if let Some(id) = sel {
                 self.state.remove(id);
                 self.selected = None;
             }
         }
-        if ui.button("打开目录").clicked() {
+        if ui.button("📁 打开目录").clicked() {
             if let Some(id) = sel {
                 if let Some(t) = self.state.task(id) {
                     platform::reveal_file(&self.state.target_path(&t));
@@ -168,146 +214,169 @@ impl NdmApp {
         if ui.button("清空已完成").clicked() {
             self.state.clear_completed();
         }
-        ui.separator();
-        if ui.button("设置").clicked() {
-            self.settings_edit = self.state.settings_snapshot();
-            self.set_download_dir = self.settings_edit.download_dir.to_string_lossy().to_string();
-            self.set_temp_dir = self.settings_edit.temp_dir.to_string_lossy().to_string();
-            self.show_settings = true;
-        }
-        if ui.button("关于").clicked() {
-            self.show_about = true;
-        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("⚙ 设置").clicked() {
+                self.settings_edit = self.state.settings_snapshot();
+                self.set_download_dir = self.settings_edit.download_dir.to_string_lossy().to_string();
+                self.set_temp_dir = self.settings_edit.temp_dir.to_string_lossy().to_string();
+                self.show_settings = true;
+            }
+            if ui.button("ⓘ 关于").clicked() {
+                self.show_about = true;
+            }
+        });
     }
 
-    fn sidebar(&mut self, ui: &mut egui::Ui, tasks: &[TaskView]) {
-        ui.heading("NDM-RS");
-        ui.label("下载管理器");
-        ui.add_space(8.0);
-        ui.separator();
+    fn sidebar(&mut self, ui: &mut egui::Ui, tasks: &[TaskView], time: f64) {
+        ui.add_space(4.0);
+        let ext = self.state.ext_connected();
+        egui::Frame::new()
+            .fill(c::SURFACE_2)
+            .corner_radius(egui::CornerRadius::same(12))
+            .inner_margin(egui::Margin::symmetric(12, 10))
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    theme::icon_tile(ui, "⇩", c::ACCENT, 34.0);
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("NDM-RS").strong().size(15.0));
+                    ui.label(RichText::new("轻量下载管理器").small().color(c::FAINT));
+                });
+                ui.add_space(8.0);
+                theme::pulse_status(ui, ext, if ext { "扩展已连接" } else { "扩展未连接" }, time);
+            });
+        ui.add_space(12.0);
+
         for f in Filter::ALL {
             let count = tasks.iter().filter(|v| f.matches(v)).count();
-            let text = format!("{}  ({})", f.label(), count);
-            if ui.selectable_label(self.filter == f, text).clicked() {
+            if theme::nav_item(ui, f.glyph(), f.label(), count, self.filter == f) {
                 self.filter = f;
             }
         }
+
         ui.add_space(12.0);
         ui.separator();
-        let ext = self.state.ext_connected();
-        ui.horizontal(|ui| {
-            ui.colored_label(
-                if ext {
-                    egui::Color32::from_rgb(30, 150, 70)
-                } else {
-                    egui::Color32::GRAY
-                },
-                if ext { "● 扩展已连接" } else { "○ 扩展未连接" },
-            );
-        });
+        ui.add_space(8.0);
+        ui.label(RichText::new("兼容官方扩展").size(11.0).color(c::MUTED));
+        ui.label(
+            RichText::new("NeatDownloadManager\nExtension 1.9.92")
+                .small()
+                .color(c::FAINT),
+        );
         ui.add_space(6.0);
         ui.label(
-            egui::RichText::new("官方扩展\nNeatDownloadManager\nExtension 1.9.92")
+            RichText::new("ws://127.0.0.1:10007")
                 .small()
-                .color(egui::Color32::GRAY),
-        );
-        ui.add_space(8.0);
-        ui.label(
-            egui::RichText::new("ws://127.0.0.1:10007\n/download")
-                .small()
-                .color(egui::Color32::GRAY),
+                .color(c::FAINT),
         );
     }
 
-    fn task_row(&mut self, ui: &mut egui::Ui, v: &TaskView) {
+    fn task_row(&mut self, ui: &mut egui::Ui, v: &TaskView, time: f64) {
         let selected = self.selected == Some(v.id);
-        let bg = if selected {
-            ui.visuals().selection.bg_fill
+        let (state_color, state_text) = state_color(v.state);
+
+        let fill = if selected {
+            Color32::from_rgba_unmultiplied(c::ACCENT.r(), c::ACCENT.g(), c::ACCENT.b(), 26)
         } else {
-            ui.visuals().faint_bg_color
+            c::SURFACE
         };
-        egui::Frame::NONE
-            .fill(bg)
-            .corner_radius(4.0)
-            .inner_margin(egui::vec2(8.0, 6.0))
+        let stroke = if selected {
+            egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(c::ACCENT.r(), c::ACCENT.g(), c::ACCENT.b(), 150))
+        } else {
+            egui::Stroke::new(1.0, c::BORDER)
+        };
+
+        let card = egui::Frame::new()
+            .fill(fill)
+            .corner_radius(egui::CornerRadius::same(10))
+            .inner_margin(egui::Margin::symmetric(12, 10))
+            .stroke(stroke);
+
+        let clicked = card
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    let name = if v.filename.chars().count() > 42 {
-                        let mut s: String = v.filename.chars().take(40).collect();
-                        s.push_str("…");
+                    theme::icon_tile(ui, category_glyph(v.category), category_color(v.category), 24.0);
+                    ui.add_space(4.0);
+                    let name = if v.filename.chars().count() > 44 {
+                        let mut s: String = v.filename.chars().take(42).collect();
+                        s.push('…');
                         s
                     } else {
                         v.filename.clone()
                     };
-                    if ui
-                        .add_sized(
-                            [300.0, 20.0],
-                            egui::SelectableLabel::new(selected, egui::RichText::new(name).strong()),
-                        )
-                        .clicked()
-                    {
-                        self.selected = Some(v.id);
-                    }
-                    ui.add_sized(
-                        [90.0, 20.0],
-                        egui::Label::new(if v.is_hls {
-                            v.media_stage.clone()
-                        } else if v.size > 0 {
-                            util::format_size(v.size)
-                        } else {
-                            "未知大小".to_string()
-                        }),
-                    );
-                    ui.add_sized([180.0, 16.0], egui::ProgressBar::new(v.progress));
-                    ui.add_sized(
-                        [70.0, 20.0],
-                        egui::Label::new(util::format_speed(v.speed)),
-                    );
-                    ui.add_sized([62.0, 20.0], egui::Label::new(v.eta.clone()));
-                    let (color, text) = state_color(v.state);
-                    ui.add_sized(
-                        [70.0, 20.0],
-                        egui::Label::new(egui::RichText::new(text).color(color)),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    ui.add_space(2.0);
-                    ui.label(
-                        egui::RichText::new(format!("来源: {}  ·  {} 连接  ·  {}", v.source, v.threads, v.created_at))
-                            .small()
-                            .color(egui::Color32::GRAY),
-                    );
-                    if !v.error.is_empty() {
-                        ui.colored_label(egui::Color32::RED, format!("错误: {}", v.error));
+                    ui.label(RichText::new(name).strong().size(13.5));
+                    if v.is_hls {
+                        ui.label(RichText::new("HLS").small().color(c::ACCENT_2));
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("删除").clicked() {
+                        theme::status_badge(ui, state_text, state_color);
+                    });
+                });
+
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    let size_text = if v.size > 0 {
+                        util::format_size(v.size)
+                    } else if v.is_hls {
+                        v.media_stage.clone()
+                    } else {
+                        "未知大小".to_string()
+                    };
+                    ui.label(RichText::new(format!("{}  ·  {} 连接", size_text, v.threads)).small().color(c::MUTED));
+                    if v.state == TaskState::Running {
+                        ui.label(RichText::new(util::format_speed(v.speed)).small().strong().color(c::INFO));
+                        ui.label(RichText::new(v.eta.clone()).small().color(c::MUTED));
+                    }
+                    ui.label(RichText::new(format!("·  {}", v.source)).small().color(c::FAINT));
+                });
+
+                ui.add_space(6.0);
+                let bar_color = match v.state {
+                    TaskState::Done => c::SUCCESS,
+                    TaskState::Error => c::ERROR,
+                    TaskState::Paused | TaskState::Canceled => c::WARN,
+                    _ => c::ACCENT,
+                };
+                theme::fancy_progress(ui, v.progress, bar_color, time);
+
+                if !v.error.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(format!("错误: {}", v.error)).small().color(c::ERROR));
+                }
+
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(v.created_at.clone()).small().color(c::FAINT));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("✕ 删除").clicked() {
                             self.state.remove(v.id);
                             if self.selected == Some(v.id) {
                                 self.selected = None;
                             }
                         }
-                        if v.state == TaskState::Done {
-                            if ui.small_button("打开").clicked() {
-                                if let Some(t) = self.state.task(v.id) {
-                                    platform::reveal_file(&self.state.target_path(&t));
-                                }
+                        if v.state == TaskState::Done && ui.small_button("打开").clicked() {
+                            if let Some(t) = self.state.task(v.id) {
+                                platform::reveal_file(&self.state.target_path(&t));
                             }
                         }
                         if matches!(v.state, TaskState::Running | TaskState::Queued | TaskState::Merging) {
-                            if ui.small_button("暂停").clicked() {
+                            if ui.small_button("⏸ 暂停").clicked() {
                                 self.state.pause(v.id);
                             }
-                        } else if ui.small_button("开始").clicked() {
+                        } else if ui.small_button("▶ 开始").clicked() {
                             self.state.resume(v.id);
                         }
-                        if ui.small_button("重试").clicked() {
+                        if ui.small_button("⟳ 重试").clicked() {
                             self.state.restart(v.id);
                         }
                     });
                 });
-            });
-        ui.add_space(4.0);
+            })
+            .response
+            .clicked();
+        if clicked {
+            self.selected = Some(v.id);
+        }
+        ui.add_space(8.0);
     }
 
     fn new_task_window(&mut self, ctx: &egui::Context) {
@@ -315,55 +384,52 @@ impl NdmApp {
         egui::Window::new("新建下载任务")
             .open(&mut open)
             .resizable(false)
-            .default_width(560.0)
+            .default_width(580.0)
+            .frame(dialog_frame())
             .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    theme::icon_tile(ui, "＋", c::ACCENT, 26.0);
+                    ui.label(RichText::new("新建下载任务").strong().size(15.0));
+                });
+                ui.add_space(10.0);
                 egui::Grid::new("new_task_grid")
                     .num_columns(2)
-                    .spacing([10.0, 8.0])
+                    .spacing([12.0, 10.0])
                     .show(ui, |ui| {
                         ui.label("下载地址");
                         ui.add_sized(
-                            [430.0, 22.0],
+                            [440.0, 24.0],
                             egui::TextEdit::singleline(&mut self.new_url).hint_text("https://..."),
                         );
                         ui.end_row();
 
                         ui.label("文件名（可选）");
                         ui.add_sized(
-                            [430.0, 22.0],
+                            [440.0, 24.0],
                             egui::TextEdit::singleline(&mut self.new_filename)
                                 .hint_text("留空则自动推断"),
                         );
                         ui.end_row();
 
                         ui.label("保存目录");
-                        ui.add_sized(
-                            [430.0, 22.0],
-                            egui::TextEdit::singleline(&mut self.new_dir),
-                        );
+                        ui.add_sized([440.0, 24.0], egui::TextEdit::singleline(&mut self.new_dir));
                         ui.end_row();
 
                         ui.label("Referer（可选）");
-                        ui.add_sized(
-                            [430.0, 22.0],
-                            egui::TextEdit::singleline(&mut self.new_referer),
-                        );
+                        ui.add_sized([440.0, 24.0], egui::TextEdit::singleline(&mut self.new_referer));
                         ui.end_row();
 
                         ui.label("Cookie（可选）");
-                        ui.add_sized(
-                            [430.0, 22.0],
-                            egui::TextEdit::singleline(&mut self.new_cookie),
-                        );
+                        ui.add_sized([440.0, 24.0], egui::TextEdit::singleline(&mut self.new_cookie));
                         ui.end_row();
 
                         ui.label("连接数");
                         ui.add(egui::DragValue::new(&mut self.new_threads).range(1.0..=32.0));
                         ui.end_row();
                     });
-                ui.add_space(8.0);
+                ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    if ui.button("添加任务").clicked() {
+                    if theme::primary_button(ui, "添加任务") {
                         self.submit_new_task();
                     }
                     if ui.button("取消").clicked() {
@@ -411,15 +477,16 @@ impl NdmApp {
         let mut open = self.show_settings;
         egui::Window::new("设置")
             .open(&mut open)
-            .default_width(560.0)
+            .default_width(600.0)
+            .frame(dialog_frame())
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical()
-                    .max_height(520.0)
+                    .max_height(560.0)
                     .show(ui, |ui| {
-                        ui.heading("连接");
+                        section(ui, "连接");
                         egui::Grid::new("set_grid")
                             .num_columns(2)
-                            .spacing([10.0, 8.0])
+                            .spacing([12.0, 10.0])
                             .show(ui, |ui| {
                                 ui.label("每个任务最大连接数")
                                     .on_hover_text("分块下载，需服务器支持 Range");
@@ -446,7 +513,7 @@ impl NdmApp {
 
                                 ui.label("User-Agent");
                                 ui.add_sized(
-                                    [390.0, 22.0],
+                                    [400.0, 24.0],
                                     egui::TextEdit::singleline(&mut self.settings_edit.user_agent),
                                 );
                                 ui.end_row();
@@ -457,19 +524,19 @@ impl NdmApp {
                             "动态分段（按服务器能力自动选择连接数）",
                         );
 
-                        ui.add_space(10.0);
-                        ui.heading("目录");
+                        ui.add_space(12.0);
+                        section(ui, "目录");
                         ui.horizontal(|ui| {
                             ui.label("下载目录");
                             ui.add_sized(
-                                [390.0, 22.0],
+                                [400.0, 24.0],
                                 egui::TextEdit::singleline(&mut self.set_download_dir),
                             );
                         });
                         ui.horizontal(|ui| {
                             ui.label("临时目录");
                             ui.add_sized(
-                                [390.0, 22.0],
+                                [400.0, 24.0],
                                 egui::TextEdit::singleline(&mut self.set_temp_dir)
                                     .hint_text("留空则与下载目录相同"),
                             );
@@ -479,8 +546,8 @@ impl NdmApp {
                             "按文件类型建立子目录（Videos / Documents ...）",
                         );
 
-                        ui.add_space(10.0);
-                        ui.heading("代理");
+                        ui.add_space(12.0);
+                        section(ui, "代理");
                         egui::ComboBox::from_label("代理模式")
                             .selected_text(self.settings_edit.proxy_mode.label())
                             .show_ui(ui, |ui| {
@@ -494,43 +561,27 @@ impl NdmApp {
                             });
                         egui::Grid::new("proxy_grid")
                             .num_columns(2)
-                            .spacing([10.0, 8.0])
+                            .spacing([12.0, 10.0])
                             .show(ui, |ui| {
                                 ui.label("HTTP 代理 (host:port)");
-                                ui.add_sized(
-                                    [300.0, 22.0],
-                                    egui::TextEdit::singleline(&mut self.settings_edit.http_proxy),
-                                );
+                                ui.add_sized([320.0, 24.0], egui::TextEdit::singleline(&mut self.settings_edit.http_proxy));
                                 ui.end_row();
                                 ui.label("HTTPS 代理 (留空复用)");
-                                ui.add_sized(
-                                    [300.0, 22.0],
-                                    egui::TextEdit::singleline(&mut self.settings_edit.https_proxy),
-                                );
+                                ui.add_sized([320.0, 24.0], egui::TextEdit::singleline(&mut self.settings_edit.https_proxy));
                                 ui.end_row();
                                 ui.label("SOCKS5 代理 (host:port)");
-                                ui.add_sized(
-                                    [300.0, 22.0],
-                                    egui::TextEdit::singleline(&mut self.settings_edit.socks_proxy),
-                                );
+                                ui.add_sized([320.0, 24.0], egui::TextEdit::singleline(&mut self.settings_edit.socks_proxy));
                                 ui.end_row();
                                 ui.label("代理用户名");
-                                ui.add_sized(
-                                    [300.0, 22.0],
-                                    egui::TextEdit::singleline(&mut self.settings_edit.proxy_user),
-                                );
+                                ui.add_sized([320.0, 24.0], egui::TextEdit::singleline(&mut self.settings_edit.proxy_user));
                                 ui.end_row();
                                 ui.label("代理密码");
-                                ui.add_sized(
-                                    [300.0, 22.0],
-                                    egui::TextEdit::singleline(&mut self.settings_edit.proxy_pass)
-                                        .password(true),
-                                );
+                                ui.add_sized([320.0, 24.0], egui::TextEdit::singleline(&mut self.settings_edit.proxy_pass).password(true));
                                 ui.end_row();
                             });
 
-                        ui.add_space(10.0);
-                        ui.heading("常规");
+                        ui.add_space(12.0);
+                        section(ui, "常规");
                         ui.checkbox(
                             &mut self.settings_edit.show_completion_dialog,
                             "下载完成时显示提示",
@@ -542,9 +593,9 @@ impl NdmApp {
                         );
                         ui.checkbox(&mut self.settings_edit.auto_start, "开机自动启动（Windows）");
                     });
-                ui.add_space(8.0);
+                ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    if ui.button("保存设置").clicked() {
+                    if theme::primary_button(ui, "保存设置") {
                         let mut edited = self.settings_edit.clone();
                         if !self.set_download_dir.trim().is_empty() {
                             edited.download_dir = PathBuf::from(self.set_download_dir.trim());
@@ -575,61 +626,103 @@ impl NdmApp {
         egui::Window::new("关于 NDM-RS")
             .open(&mut open)
             .resizable(false)
+            .frame(dialog_frame())
             .show(ctx, |ui| {
-                ui.heading(format!("NDM-RS {}", env!("CARGO_PKG_VERSION")));
-                ui.label("用 Rust 编写的 Windows 桌面下载管理器");
+                ui.horizontal(|ui| {
+                    theme::icon_tile(ui, "N", c::ACCENT, 38.0);
+                    ui.add_space(8.0);
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(format!("NDM-RS {}", env!("CARGO_PKG_VERSION"))).strong().size(16.0));
+                        ui.label(RichText::new("用 Rust 编写的 Windows 桌面下载管理器").small().color(c::MUTED));
+                    });
+                });
+                ui.add_space(12.0);
+                ui.separator();
                 ui.add_space(8.0);
-                ui.label("· 多连接分段下载 / 断点续传 / 全局限速");
-                ui.label("· HTTP / SOCKS5 代理、跟随系统代理");
-                ui.label("· 兼容官方 NeatDownloadManager Extension 1.9.92");
-                ui.label("· HLS (m3u8) 分片下载、AES-128 解密与合并");
-                ui.add_space(8.0);
+                for line in [
+                    "· 多连接分段下载 / 断点续传 / 全局限速",
+                    "· HTTP / SOCKS5 代理、跟随系统代理",
+                    "· 兼容官方 NeatDownloadManager Extension 1.9.92",
+                    "· HLS (m3u8) 分片下载、AES-128 解密与合并",
+                ] {
+                    ui.label(RichText::new(line).size(12.5));
+                }
+                ui.add_space(10.0);
                 ui.label(
-                    egui::RichText::new(
-                        "扩展协议：ws://127.0.0.1:10007/download，子协议 neatextension.v1",
-                    )
-                    .small(),
+                    RichText::new("扩展协议：ws://127.0.0.1:10007/download · neatextension.v1")
+                        .small()
+                        .color(c::FAINT),
                 );
-                ui.hyperlink_to(
-                    "Neat Download Manager 官网",
-                    "https://www.neatdownloadmanager.com/",
-                );
+                ui.hyperlink_to("Neat Download Manager 官网", "https://www.neatdownloadmanager.com/");
             });
         self.show_about = open;
     }
 }
 
-fn state_color(s: TaskState) -> (egui::Color32, &'static str) {
+fn dialog_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(c::SURFACE)
+        .corner_radius(egui::CornerRadius::same(14))
+        .inner_margin(egui::Margin::same(18))
+        .stroke(egui::Stroke::new(1.0, c::BORDER))
+        .shadow(egui::Shadow {
+            offset: [0, 12],
+            blur: 30,
+            spread: 0,
+            color: Color32::from_black_alpha(170),
+        })
+}
+
+fn section(ui: &mut egui::Ui, title: &str) {
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::Separator::default()
+                .vertical()
+                .spacing(1.0),
+        );
+        ui.label(RichText::new(title).strong().size(13.0).color(c::ACCENT));
+    });
+}
+
+fn state_color(s: TaskState) -> (Color32, &'static str) {
     match s {
-        TaskState::Done => (egui::Color32::from_rgb(27, 130, 60), s.label()),
-        TaskState::Error => (egui::Color32::from_rgb(198, 40, 40), s.label()),
-        TaskState::Running | TaskState::Merging => {
-            (egui::Color32::from_rgb(21, 101, 192), s.label())
-        }
-        TaskState::Paused => (egui::Color32::from_rgb(200, 100, 10), s.label()),
-        TaskState::Queued => (egui::Color32::GRAY, s.label()),
-        TaskState::Canceled => (egui::Color32::DARK_GRAY, s.label()),
+        TaskState::Done => (c::SUCCESS, s.label()),
+        TaskState::Error => (c::ERROR, s.label()),
+        TaskState::Running | TaskState::Merging => (c::INFO, s.label()),
+        TaskState::Paused => (c::WARN, s.label()),
+        TaskState::Queued => (c::ACCENT, s.label()),
+        TaskState::Canceled => (c::FAINT, s.label()),
     }
 }
 
 impl eframe::App for NdmApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.request_repaint_after(Duration::from_millis(400));
+        let tasks = self.state.tasks_snapshot();
+        let total_speed = self.state.total_speed();
+        let time = ctx.input(|i| i.time);
+
+        // 有活动任务时提高重绘频率以驱动流光/呼吸动画，空闲时降频省电。
+        let has_active = tasks.iter().any(|v| v.state.is_active());
+        let repaint = if has_active {
+            Duration::from_millis(33)
+        } else {
+            Duration::from_millis(90)
+        };
+        ctx.request_repaint_after(repaint);
 
         // 关闭窗口时按设置最小化到托盘（eframe 0.31 无 on_close_event 钩子，
         // 需在 update 中检查 close_requested 并取消关闭）。
-        if ctx.input(|i| i.viewport().close_requested()) {
-            if !self.allow_close && self.state.settings_snapshot().minimize_to_tray {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                self.hide_requested = true;
-            }
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.allow_close
+            && self.state.settings_snapshot().minimize_to_tray
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.hide_requested = true;
         }
-
         if self.hide_requested {
             self.hide_requested = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
-
         match self.tray.poll() {
             TrayAction::Show => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
@@ -641,92 +734,119 @@ impl eframe::App for NdmApp {
             TrayAction::None => {}
         }
 
-        let tasks = self.state.tasks_snapshot();
-        let total_speed = self.state.total_speed();
-
-        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.heading("NDM-RS");
-                ui.separator();
-                self.toolbar(ui);
+        // ── 顶部工具栏 ──────────────────────────────────────────────────
+        egui::TopBottomPanel::top("toolbar")
+            .frame(
+                egui::Frame::new()
+                    .fill(c::SURFACE)
+                    .inner_margin(egui::Margin::symmetric(14, 9))
+                    .stroke(egui::Stroke::new(1.0, c::BORDER)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    self.toolbar(ui);
+                });
+                if self.font_warning {
+                    ui.add_space(4.0);
+                    ui.colored_label(
+                        c::WARN,
+                        "未找到系统中文字体，界面文字可能显示为方块；可设置环境变量 NDM_FONT 指向一个中文 .ttf 文件",
+                    );
+                }
             });
-            if self.font_warning {
-                ui.colored_label(
-                    egui::Color32::from_rgb(200, 100, 10),
-                    "未找到系统中文字体，界面文字可能显示为方块；可设置环境变量 NDM_FONT 指向一个中文 .ttf 文件",
-                );
-            }
-        });
 
+        // ── 左侧分类栏 ──────────────────────────────────────────────────
         egui::SidePanel::left("sidebar")
             .resizable(false)
-            .default_width(190.0)
+            .default_width(206.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(c::BG)
+                    .inner_margin(egui::Margin::symmetric(12, 14))
+                    .stroke(egui::Stroke::new(1.0, c::BORDER)),
+            )
             .show(ctx, |ui| {
-                self.sidebar(ui, &tasks);
+                self.sidebar(ui, &tasks, time);
             });
 
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(format!("共 {} 个任务", tasks.len()));
-                ui.separator();
-                ui.label(format!(
-                    "下载中 {}",
-                    tasks.iter().filter(|v| v.state == TaskState::Running).count()
-                ));
-                ui.separator();
-                ui.label(format!("总速度 {}", util::format_speed(total_speed)));
-                ui.separator();
-                let limit = self.state.throttle.limit_kbps();
-                ui.label(if limit > 0 {
-                    format!("限速 {} KB/s", limit)
-                } else {
-                    "未限速".to_string()
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let ext = self.state.ext_connected();
-                    ui.colored_label(
-                        if ext {
-                            egui::Color32::from_rgb(30, 150, 70)
-                        } else {
-                            egui::Color32::GRAY
-                        },
-                        if ext {
-                            "浏览器扩展已连接"
-                        } else {
-                            "等待浏览器扩展连接"
-                        },
-                    );
+        // ── 底部状态栏 ──────────────────────────────────────────────────
+        egui::TopBottomPanel::bottom("status")
+            .frame(
+                egui::Frame::new()
+                    .fill(c::SURFACE)
+                    .inner_margin(egui::Margin::symmetric(14, 7))
+                    .stroke(egui::Stroke::new(1.0, c::BORDER)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    theme::stat_chip(ui, "任务总数", &tasks.len().to_string(), c::ACCENT);
+                    let running = tasks.iter().filter(|v| v.state == TaskState::Running).count();
+                    theme::stat_chip(ui, "下载中", &running.to_string(), c::INFO);
+                    theme::stat_chip(ui, "总速度", &util::format_speed(total_speed), c::SUCCESS);
+                    let limit = self.state.throttle.limit_kbps();
+                    let limit_text = if limit > 0 {
+                        format!("{} KB/s", limit)
+                    } else {
+                        "不限".to_string()
+                    };
+                    theme::stat_chip(ui, "限速", &limit_text, c::WARN);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let ext = self.state.ext_connected();
+                        theme::pulse_status(
+                            ui,
+                            ext,
+                            if ext { "浏览器扩展已连接" } else { "等待浏览器扩展连接" },
+                            time,
+                        );
+                    });
                 });
             });
-        });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if tasks.is_empty() {
-                ui.centered_and_justified(|ui| {
-                    ui.label(
-                        egui::RichText::new(
-                            "暂无下载任务\n\n点击「新建任务」，或在浏览器中安装官方\nNeatDownloadManager Extension 后，点击下载链接即可自动接管",
-                        )
-                        .size(16.0)
-                        .color(egui::Color32::GRAY),
-                    );
+        // ── 中央任务区 ──────────────────────────────────────────────────
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(c::BG).inner_margin(egui::Margin::same(14)))
+            .show(ctx, |ui| {
+                if tasks.is_empty() {
+                    ui.centered_and_justified(|ui| {
+                        ui.vertical_centered(|ui| {
+                            theme::empty_illustration(ui, time);
+                            ui.add_space(10.0);
+                            ui.label(RichText::new("还没有下载任务").strong().size(19.0));
+                            ui.add_space(6.0);
+                            ui.label(
+                                RichText::new(
+                                    "点击「新建任务」手动添加，或安装官方\nNeatDownloadManager 扩展后，点击网页下载链接即可自动接管",
+                                )
+                                .size(12.5)
+                                .color(c::FAINT),
+                            );
+                            ui.add_space(18.0);
+                            if theme::primary_button(ui, "＋  新建任务") {
+                                self.show_new = true;
+                            }
+                        });
+                    });
+                    return;
+                }
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    let visible: Vec<TaskView> = tasks
+                        .iter()
+                        .filter(|v| self.filter.matches(v))
+                        .cloned()
+                        .collect();
+                    if visible.is_empty() {
+                        ui.centered_and_justified(|ui| {
+                            ui.vertical_centered(|ui| {
+                                ui.label(RichText::new("该分类下没有任务").size(14.0).color(c::FAINT));
+                            });
+                        });
+                    } else {
+                        for v in &visible {
+                            self.task_row(ui, v, time);
+                        }
+                    }
                 });
-                return;
-            }
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                let visible: Vec<TaskView> = tasks
-                    .iter()
-                    .filter(|v| self.filter.matches(v))
-                    .cloned()
-                    .collect();
-                for v in &visible {
-                    self.task_row(ui, v);
-                }
-                if visible.is_empty() {
-                    ui.label("该分类下没有任务");
-                }
             });
-        });
 
         if self.show_new {
             self.new_task_window(ctx);
@@ -738,28 +858,37 @@ impl eframe::App for NdmApp {
             self.about_window(ctx);
         }
 
-        // 右下角通知
+        // ── 右下角通知 ──────────────────────────────────────────────────
         let events = self.state.recent_events();
         if !events.is_empty() {
             egui::Window::new("通知")
-                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-14.0, -14.0))
+                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -16.0))
                 .title_bar(false)
                 .resizable(false)
+                .frame(
+                    egui::Frame::new()
+                        .fill(c::SURFACE)
+                        .corner_radius(egui::CornerRadius::same(12))
+                        .inner_margin(egui::Margin::symmetric(14, 10))
+                        .stroke(egui::Stroke::new(1.0, c::BORDER))
+                        .shadow(egui::Shadow {
+                            offset: [0, 8],
+                            blur: 24,
+                            spread: 0,
+                            color: Color32::from_black_alpha(150),
+                        }),
+                )
                 .show(ctx, |ui| {
                     for e in events {
-                        ui.colored_label(
-                            if e.is_error {
-                                egui::Color32::RED
-                            } else {
-                                egui::Color32::from_rgb(27, 130, 60)
-                            },
-                            &e.text,
-                        );
+                        let color = if e.is_error { c::ERROR } else { c::SUCCESS };
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(if e.is_error { "✕" } else { "✓" }).color(color).strong());
+                            ui.label(RichText::new(&e.text).color(c::TEXT));
+                        });
                     }
                 });
         }
     }
-
 }
 
 /// 加载中文字体。优先使用 Windows 自带的 TrueType 中文字体；
@@ -771,17 +900,16 @@ fn setup_fonts(ctx: &egui::Context) -> bool {
     }
     if cfg!(windows) {
         for name in [
-            "simhei.ttf",   // 黑体（TrueType，Win7+ 中文版自带）
-            "Deng.ttf",     // 等线（Win10+）
+            "simhei.ttf",
+            "Deng.ttf",
             "Dengb.ttf",
-            "simkai.ttf",   // 楷体
-            "simfang.ttf",  // 仿宋
-            "simsun.ttc",   // 宋体（TTC）
-            "msyh.ttc",     // 微软雅黑（TTC，放最后）
+            "simkai.ttf",
+            "simfang.ttf",
+            "simsun.ttc",
+            "msyh.ttc",
         ] {
             candidates.push(PathBuf::from(format!(r"C:\Windows\Fonts\{name}")));
         }
-        // 也扫描字体目录里的其它中文 TrueType 字体
         if let Ok(rd) = std::fs::read_dir(r"C:\Windows\Fonts") {
             for e in rd.flatten() {
                 let p = e.path();
@@ -803,7 +931,6 @@ fn setup_fonts(ctx: &egui::Context) -> bool {
     let mut font_bytes: Option<Vec<u8>> = None;
     for p in &candidates {
         if let Ok(data) = std::fs::read(p) {
-            // 只接受 TrueType (glyf) 字体，避免 OTF/CFF 或 TTC 解析失败导致 egui panic
             if is_truetype(&data) {
                 font_bytes = Some(data);
                 log::info!("使用界面字体: {}", p.display());
@@ -833,7 +960,6 @@ fn setup_fonts(ctx: &egui::Context) -> bool {
 }
 
 fn is_truetype(data: &[u8]) -> bool {
-    // 只接受 TrueType(glyf) 字体：OTF/CFF、TTC 合集在部分 egui 后端会解析失败
     data.len() > 12 && (&data[..4] == b"\x00\x01\x00\x00" || &data[..4] == b"true")
 }
 
@@ -841,8 +967,8 @@ pub fn run_gui(state: Arc<AppState>, minimized: bool) {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("NDM-RS 下载管理器")
-            .with_inner_size([1160.0, 720.0])
-            .with_min_inner_size([940.0, 560.0])
+            .with_inner_size([1200.0, 760.0])
+            .with_min_inner_size([980.0, 600.0])
             .with_visible(!minimized),
         ..Default::default()
     };
@@ -852,6 +978,7 @@ pub fn run_gui(state: Arc<AppState>, minimized: bool) {
         options,
         Box::new(move |cc| {
             let ok = setup_fonts(&cc.egui_ctx);
+            theme::apply_theme(&cc.egui_ctx);
             let mut app = NdmApp::new(s.clone());
             app.font_warning = !ok;
             Ok(Box::new(app))

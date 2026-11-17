@@ -10,6 +10,7 @@ pub mod hls;
 pub mod model;
 pub mod platform;
 pub mod settings;
+pub mod theme;
 pub mod throttle;
 pub mod util;
 

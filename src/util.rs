@@ -85,7 +85,7 @@ pub fn safe_filename(input: &str) -> String {
 /// 从 URL 路径中推断文件名（忽略查询参数，做百分号解码）。
 pub fn filename_from_url(raw: &str) -> Option<String> {
     let u = Url::parse(raw).ok()?;
-    let seg = u.path_segments()?.filter(|s| !s.is_empty()).last()?.to_string();
+    let seg = u.path_segments()?.rfind(|s| !s.is_empty())?.to_string();
     let decoded = percent_decode_str(&seg).decode_utf8_lossy().to_string();
     let name = safe_filename(&decoded);
     if name.is_empty() {
@@ -108,7 +108,7 @@ pub fn filename_from_content_disposition(value: &str) -> Option<String> {
             if !name.is_empty() {
                 return Some(name);
             }
-        } else if let Some(_) = lower.strip_prefix("filename=") {
+        } else if lower.strip_prefix("filename=").is_some() {
             let raw = part.get(part.find('=')? + 1..)?.trim().trim_matches('"');
             let raw = raw.rsplit(['/', '\\']).next().unwrap_or(raw);
             let name = safe_filename(raw);

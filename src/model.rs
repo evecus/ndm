@@ -109,6 +109,9 @@ impl Segment {
     pub fn len(&self) -> u64 {
         self.end.saturating_sub(self.start) + 1
     }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     pub fn done(&self) -> bool {
         self.written >= self.len()
     }

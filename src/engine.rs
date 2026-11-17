@@ -258,15 +258,14 @@ fn request(
     task: &Task,
 ) -> RequestBuilder {
     let is_post = task.method.eq_ignore_ascii_case("POST");
-    let builder = if is_post {
+    if is_post {
         client
             .post(url)
             .headers(headers.clone())
             .body(task.post_data.clone().unwrap_or_default())
     } else {
         client.get(url).headers(headers.clone())
-    };
-    builder
+    }
 }
 
 async fn probe_file(
@@ -478,6 +477,7 @@ async fn open_part(path: &PathBuf, append: bool) -> Result<tokio::fs::File, Fail
 }
 
 /// 单个分段下载，支持断点续传与失败重试。
+#[allow(clippy::too_many_arguments, clippy::ptr_arg)]
 async fn download_segment(
     state: &Arc<AppState>,
     id: u64,
@@ -567,6 +567,7 @@ async fn download_segment(
     Err(Fail::Msg(format!("分段 {idx} 多次重试后仍未完成")))
 }
 
+#[allow(clippy::too_many_arguments, clippy::ptr_arg)]
 async fn download_all_segments(
     state: &Arc<AppState>,
     id: u64,
@@ -615,6 +616,7 @@ async fn download_all_segments(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn download_single(
     state: &Arc<AppState>,
     id: u64,
