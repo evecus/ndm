@@ -30,6 +30,9 @@ pub mod c {
 
 /// 把全局样式替换为现代深色主题。仅在初始化时调用一次。
 pub fn apply_theme(ctx: &egui::Context) {
+    // 锁定深色主题，不跟随 Windows 系统浅色主题。否则系统主题会把 widget
+    // 渲染成浅色背景，配合白色文字就会出现「白底白字看不清」。
+    ctx.set_theme(egui::Theme::Dark);
     ctx.all_styles_mut(|style| {
         let v = &mut style.visuals;
         v.dark_mode = true;
@@ -38,7 +41,9 @@ pub fn apply_theme(ctx: &egui::Context) {
         v.faint_bg_color = c::SURFACE_2;
         v.extreme_bg_color = c::SURFACE;
         v.code_bg_color = c::SURFACE_2;
-        v.override_text_color = Some(c::TEXT);
+        // 不使用 override_text_color：它会把所有 widget 文字强制成同一颜色，
+        // 一旦按钮背景为浅色就会白底白字。改为按状态分别设置 fg_stroke。
+        v.override_text_color = None;
         v.hyperlink_color = c::ACCENT;
         v.warn_fg_color = c::WARN;
         v.error_fg_color = c::ERROR;
@@ -54,7 +59,7 @@ pub fn apply_theme(ctx: &egui::Context) {
         v.button_frame = true;
         v.striped = false;
         v.widgets.noninteractive.bg_fill = c::SURFACE_2;
-        v.widgets.noninteractive.fg_stroke.color = c::MUTED;
+        v.widgets.noninteractive.fg_stroke.color = c::TEXT;
         v.widgets.inactive.bg_fill = c::SURFACE_2;
         v.widgets.inactive.fg_stroke.color = c::TEXT;
         v.widgets.inactive.bg_stroke = Stroke::new(1.0, c::BORDER);
