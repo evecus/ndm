@@ -1,0 +1,44 @@
+name: Build Windows amd64
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # 发布 Release 需要
+
+env:
+  CARGO_TERM_COLOR: always
+  TARGET: x86_64-pc-windows-msvc
+
+jobs:
+
+  build:
+    name: Windows release
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --target ${{ env.TARGET }}
+      - name: Package
+        run: |
+          mkdir dist
+          cp target/${{ env.TARGET }}/release/ndm-rs.exe dist/
+          cp README.md dist/
+          cd dist
+          7z a -tzip ../ndm-rs-windows-amd64.zip ./*
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.2.0
+          name: NDM-RS v0.2.0
+          files: ndm-rs-windows-amd64.zip
